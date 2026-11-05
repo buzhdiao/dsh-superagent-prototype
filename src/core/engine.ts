@@ -1,4 +1,8 @@
 /** The domain Engine: the single entry point of the core, and the role interfaces its callers receive. */
+// Engine（领域引擎）：core 的唯一入口，也是各调用方拿到的角色接口的定义处。
+// 设计要点：所有对 Trigger / Thread / Decision / Ticket / Assignment 的写入都经由 Engine，
+// 每个命令在一个 repo.atomic 事务内同步完成；副作用（发消息、启动 worker）通过端口在事务内"排队"，
+// 提交后才真正执行。调用方按角色拿到 Pick 子集（EngineForSources 等），看不到完整引擎。
 import { UserError } from './errors.ts'
 import { isoTime, liveTicket } from './model.ts'
 import type { ChannelRef, Decision, PolicyEffect, ThreadRef, Ticket, Trigger } from './model.ts'
@@ -21,6 +25,10 @@ export type { Reply, ReplyRequest } from './replies.ts'
  * Coordinates Intake, Evals, Tickets, Assignments, and Replies inside synchronous repository transactions while queuing side
  * effects through ports. Callers receive role-scoped `Pick` interfaces rather than the full engine.
  */
+// Engine：修改五类聚合（Trigger/Thread/Decision/Ticket/Assignment）的唯一事务入口。
+// 内部把职责分给五个部件（Intake/Evals/Tickets/Assignments/Replies），自己持有事务边界；
+// 副作用经由端口在事务内入队，适配器在提交后执行。
+// 对外按角色暴露 Pick 接口，而不是整个引擎。
 export class Engine {
   private readonly repo: Repositories
   private readonly replies: Replies
@@ -30,6 +38,7 @@ export class Engine {
   private readonly intake: Intake
   constructor(private readonly options: EngineOptions) {
     this.repo = options.repo
+    // 部件间的依赖是单向的：Replies 无依赖 → Tickets → Assignments / Evals / Intake。
     this.replies = new Replies(options)
     this.tickets = new Tickets(options, this.replies)
     this.assignments = new Assignments(options, this.tickets, this.replies)
@@ -38,6 +47,7 @@ export class Engine {
   }
 
   // Sources
+  // —— Source（消息来源）调用的入口 ——
 
   /**
    * A Source's request to take in a Trigger: store it once, fan it out to the tickets that subscribe to its Threads (to an
@@ -45,12 +55,18 @@ export class Engine {
    * and queue it for Eval on its primary Thread unless a ticket's worker decides it (see `followupOwners`).
    * Triggers that arrive while an Eval of that Thread runs wait together for the next one.
    */
+  // receive：Source 交来一条 Trigger——
+  // 只存一次；扇出给订阅其 Thread 的 Ticket（对已结束的 Ticket 只有真人消息能立即恢复，被停止的收不到）；
+  // 若没有 Ticket 的 worker 决定它（见 followupOwners），则排入主 Thread 的 Eval 队列。
+  // 该 Thread 的 Eval 进行中时到达的 Trigger 一起等下一轮（防抖合批）。
   receive(trigger: Trigger): ReceiveResult { return this.repo.atomic(() => this.intake.receive(trigger)) }
   /**
    * A Source's request to make an open ticket follow one of its Threads, such as a pull request's, `own` when the ticket
    * opened it: the ticket subscribes to it, and a ready report ends it only once `followsDone` holds (see `Tickets.followsDone`).
    * @throws UserError when the ticket is unknown or has ended.
    */
+  // bindThread：Source 让某个存活 Ticket 跟随它的一个 Thread（比如它开的 PR）；
+  // `own=true` 表示该 Thread 是 Ticket 自己开的——之后 ready 报告只有在 followsDone 成立时才结束 Ticket。
   bindThread(ticketId: string, thread: ThreadRef, own: boolean): Ticket {
     return this.repo.atomic(() => this.tickets.bind(ticketId, thread, own))
   }
@@ -59,12 +75,17 @@ export class Engine {
    * follows it ends once it is done with the Threads it follows, unless work resumed since the close has not finished, or
    * its worker took up a person's message the ticket decides after its latest report.
    */
+  // threadClosed：Source 报告某个 Thread 已关闭（如 PR 被合并），记录实际关闭时间。
+  // 跟随它的存活 Ticket 在"跟完所有 Thread"（followsDone）后结束——除非关闭后工作又恢复了、
+  // 或 worker 在最新报告之后接下了一条真人消息还没交代。
   threadClosed(thread: ThreadRef, outcome: 'merged' | 'closed', at: string): void {
     // Normalize source timestamps (such as GitHub whole seconds) to canonical ISO form.
+    // 统一时间戳格式（GitHub 是整秒），保证字符串比较正确。
     this.repo.atomic(() => { this.tickets.threadClosed(thread, outcome, isoTime(at)) })
   }
 
   // The clock
+  // —— 时钟驱动：每个 pass（约每 2 秒）调用一次 ——
 
   /**
    * Requeues overdue Evals up to `REQUEUES` times before recording `unavailable` (undelivered Evals never expire), starts the
@@ -72,21 +93,32 @@ export class Engine {
    * paused. While processing is paused, nothing expires: each Eval in progress notes when the pause began, and its deadline
    * moves forward by the pause's length once processing resumes. Each Eval and each ticket update takes one transaction.
    */
+  // evaluateDue：定时评估——
+  // 1) 过期的 Eval 重排至多 REQUEUES 次，之后记 unavailable（候选未送达的永不过期）；
+  // 2) 对有排队 Trigger 的 Thread 启动新 Eval（合批）；
+  // 3) 恢复暂停期间被真人消息触及的已结束 Ticket。
+  // 暂停期间什么都不过期：进行中的 Eval 记下暂停起点，恢复时 deadline 顺延暂停时长。
+  // 每个 Eval / 每个 Ticket 的更新各占一个事务，互不影响。
   evaluateDue(): void {
     const policy = this.options.policy()
+    // 先处理进行中的 Eval 是否到期（暂停则只记 pausedAt 或顺延）。
     for (const thread of this.repo.threads.active()) if (thread.evaluating) this.repo.atomic(() => { this.evals.due(thread, policy) })
     if (policy.paused) return
+    // 恢复：真人消息曾触及的已结束 Ticket，补一次唤醒（wake 是幂等的）。
     for (const ticket of this.repo.tickets.active()) {
       if (!liveTicket(ticket) && ticket.undelivered.length) this.repo.atomic(() => { this.tickets.wake(ticket.id) })
     }
+    // 启动：有排队 Trigger 且没有进行中 Eval 的 Thread，各开一个新 Eval。
     for (const thread of this.repo.threads.active()) {
       if (thread.pending.length && !thread.evaluating) this.repo.atomic(() => { this.evals.start(thread.key, policy) })
     }
   }
 
   // The main Session
+  // —— 主会话（Router）调用的入口 ——
 
   /** The candidate of the Eval that holds a Trigger, as its assessor sees it; undefined while no Eval holds it. */
+  // candidate：读取某 Trigger 所属 Eval 的候选材料（给主会话评估用）。
   candidate(triggerId: string): Candidate | undefined { return this.evals.candidate(triggerId) }
   /**
    * Decide a Trigger: the Eval that holds it, or a direct Eval of it alone when none does, such as a person's explicit
@@ -97,6 +129,10 @@ export class Engine {
    * ticket's worker still decides the Trigger and the outcome is not a stop, or an inferred candidate is accepted outside `auto`
    * mode or without enabled matching rules.
    */
+  // decide：主会话对一条 Trigger 落结论——
+  // 有 Eval 持有就用它；没有（如主会话直接路由明确请求）就构造一次性 Eval。
+  // 主动式候选仅在 auto 模式且命中启用规则时可接受；已开过 Ticket 的 Trigger 返回原有 Decision；
+  // 无效的 stop 记为 ignore；基于旧 Policy 的判断记为 unavailable。
   decide(triggerId: string, outcome: Outcome): Decision { return this.repo.atomic(() => this.evals.decide(triggerId, outcome)) }
   /**
    * Attach a Trigger to a ticket that the message points at: the ticket follows the Trigger's Threads and receives it as an
@@ -106,12 +142,18 @@ export class Engine {
    * once unless processing is paused.
    * @throws UserError for a ticket a person stopped, which withdrew its Mandate, or one whose Mandate the Policy no longer holds.
    */
+  // attach：主会话把一条 Trigger 附加到它指向的 Ticket——
+  // Ticket 订阅其 Thread、收它为 Input（附路由备注）；持有它的 Eval 结束，批内其余 Trigger 等新 Eval。
+  // worker 已收过 Input 时备注作为新 Input 补送；被让掉/仅上下文读过/结束后才有的消息也一样补送。
+  // 已结束的 Ticket 在 Mandate 允许时立即恢复（暂停期间除外）。
   attach(ticketId: string, triggerId: string, note?: string): Ticket {
     return this.repo.atomic(() => {
       // A message this ticket's worker handed back is not its work: attached here, no worker would decide it, and it could not be handed back again.
+      // 本 Ticket 的 worker 已退回过的消息不能再附加回来——否则没人决定它，且无法再次退回。
       const handedBack = this.repo.triggers.disposition(triggerId)?.handbacks?.some(item => item.ticketId === ticketId)
       if (handedBack) throw new UserError('handedBackHere')
       const trigger = this.tickets.attachable(ticketId, triggerId)
+      // 从 Eval 队列取出、附加、结束相关 Eval、唤醒 Ticket——四步在一个事务内。
       this.evals.withdraw(trigger)
       this.tickets.attach(ticketId, trigger, note)
       this.evals.routed(triggerId, ticketId)
@@ -124,6 +166,7 @@ export class Engine {
    * @returns whether the worker was asked.
    * @throws UserError when the ticket is unknown.
    */
+  // requestStatus：向"报告过 waiting"的运行中 worker 请求状态汇报；其他状态不打扰。
   requestStatus(ticketId: string): boolean { return this.repo.atomic(() => this.tickets.requestStatus(ticketId)) }
   /**
    * Queue a message for the Channel its purpose names: an acknowledgement or an answer goes where the person's message was
@@ -132,45 +175,57 @@ export class Engine {
    * @throws UserError when the ticket or trigger is unknown or the purpose's rule refuses it, such as a result of a ticket that
    * is not ready, completed, merged, or dropped.
    */
+  // reply：按目的排队 Channel 消息（确认/回答发原会话，提问发引发问题的会话，结果发起始会话）；
+  // 同一消息不重复排队（幂等），规则不允许时抛 UserError。
   reply(request: ReplyRequest): Reply { return this.repo.atomic(() => this.replies.reply(request)) }
 
   // People, through the panel or the main Session
+  // —— 人（通过 web 面板或主会话）调用的入口 ——
 
   /** The assessor delivered an Eval's candidate to its Session: the Eval's deadline counts from now. */
+  // candidateDelivered：评估者已把候选送进主会话——Eval 的超时从此刻起算。
   candidateDelivered(evalId: string): void { this.repo.atomic(() => { this.evals.delivered(evalId, this.options.policy()) }) }
   /**
    * Queue a stored Trigger for a fresh Eval, such as a person's replay; returns false while an Eval holds it.
    * @throws UserError when the trigger is unknown.
    */
+  // reevaluate：人工重放一条已存储的 Trigger，让它接受一次全新的 Eval。
   reevaluate(triggerId: string): boolean { return this.repo.atomic(() => this.evals.reevaluate(triggerId)) }
   /**
    * A person dismisses the problem an unavailable Decision shows: the overview lists it no more.
    * @throws UserError for a Decision that is unknown or not unavailable.
    */
+  // dismiss：人处理掉 unavailable Decision 在总览页显示的问题。
   dismiss(decisionId: string): Decision { return this.repo.atomic(() => this.evals.dismiss(decisionId)) }
   /**
    * Drop every ticket's Subscription to a Thread, until a new Decision subscribes one again.
    * @returns whether a Subscription was dropped.
    */
+  // unsubscribe：取消某个 Thread 上的全部订阅（直到新的 Decision 重新订阅）。
   unsubscribe(thread: string): boolean { return this.repo.atomic(() => this.tickets.dropSubscriptions(thread, 'person')) }
   /**
    * A person stops a ticket, which withdraws its Mandate: it ends and receives nothing more.
    * @throws UserError when the ticket is unknown.
    */
+  // stopTicket：人停止 Ticket——Mandate 撤回，Ticket 结束，不再接收任何东西。
   stopTicket(ticketId: string, reason?: string): Ticket { return this.repo.atomic(() => this.tickets.stop(ticketId, reason)) }
   /**
    * A person retries a ticket whose worker reported failed or blocked (or whose input delivery failed): the stalled
    * Assignment ends and a new one starts under the same Mandate.
    * @throws UserError when the ticket is unknown, has ended, or is not retryable.
    */
+  // retryTicket：人重试卡住的 Ticket（failed/blocked 报告或投递失败）——
+  // 结束停滞的 Assignment，在同一 Mandate 下开新的。
   retryTicket(ticketId: string): Ticket { return this.repo.atomic(() => this.tickets.retry(ticketId)) }
 
   // The Executor
+  // —— Executor（执行器）回报事实的入口 ——
 
   /**
    * The Executor's fact that an Assignment runs; the Inputs that wait for it go out.
    * @throws UserError when the ticket is unknown.
    */
+  // assignmentStarted：Executor 报告 Assignment 已启动——等待中的 Inputs 随即投递。
   assignmentStarted(ticketId: string, assignmentId: string): void {
     this.repo.atomic(() => { this.assignments.started(ticketId, assignmentId) })
   }
@@ -178,6 +233,8 @@ export class Engine {
    * The Executor's fact that Inputs reached the Assignment that runs the ticket, which clears a failed delivery. A fact about
    * an Assignment that no longer runs is dropped. Its worker reads each once its Session takes it into a step (`inputsRead`).
    */
+  // inputsDelivered：Inputs 已送达运行中的 Assignment——清除投递失败标记；
+  // 若 Assignment 已不在运行，该事实被丢弃。
   inputsDelivered(ticketId: string, assignmentId: string, inputIds: string[]): void {
     this.repo.atomic(() => { this.assignments.delivered(ticketId, assignmentId, inputIds) })
   }
@@ -186,14 +243,18 @@ export class Engine {
    * which its model reads them: a report or the end of a turn after that counts them as read at the ticket's end.
    * @throws UserError when the ticket is unknown.
    */
+  // inputsRead：worker 的 Session 已把携带 Inputs 的消息纳入步骤——模型能读到了；
+  // Ticket 结束时以"送达后有报告或回合结束"来判定这些 Input 算不算读过。
   inputsRead(ticketId: string, inputIds: string[]): void {
     this.repo.atomic(() => { this.assignments.read(ticketId, inputIds) })
   }
   /** The Executor's fact that a turn of the worker of the Assignment that runs the ticket ended, after a report too. */
+  // turnEnded：worker 的一个回合结束（包括报告之后的回合）。
   turnEnded(ticketId: string, assignmentId: string): void {
     this.repo.atomic(() => { this.assignments.turnEnded(ticketId, assignmentId) })
   }
   /** The Executor's fact that delivering Inputs to the Assignment that runs the ticket failed; the ticket shows it until a delivery succeeds. */
+  // deliveryFailed：向运行中 Assignment 投递 Inputs 失败——Ticket 挂上失败标记直到下次成功。
   deliveryFailed(ticketId: string, assignmentId: string, error: string): void {
     this.repo.atomic(() => { this.assignments.deliveryFailed(ticketId, assignmentId, error) })
   }
@@ -203,6 +264,8 @@ export class Engine {
    * @throws UserError when the ticket is unknown, or for the Thread the ticket started on, one a Source bound it to (such as
    * its pull request's), or one it does not follow.
    */
+  // markUnrelated：worker 认为某个附加到 Ticket 的 Thread 与它无关——只退订这一个（原发起 Thread、
+  // Source 绑定的 Thread 不可退）。
   markUnrelated(ticketId: string, thread: string, reason: string): void {
     this.repo.atomic(() => { this.tickets.markUnrelated(ticketId, thread, reason) })
   }
@@ -211,6 +274,7 @@ export class Engine {
    * @returns false when the ticket already follows the Thread.
    * @throws UserError when the ticket is unknown or has ended.
    */
+  // followForContext：worker 发现相关 Thread，订阅它仅为上下文（消息能收到但不构成工作）。
   followForContext(ticketId: string, thread: ThreadRef): boolean {
     return this.repo.atomic(() => this.tickets.followForContext(ticketId, thread))
   }
@@ -218,12 +282,14 @@ export class Engine {
    * A fact the main Session gives an open ticket's Executor: see `Tickets.note`.
    * @throws UserError when the ticket is unknown or has ended.
    */
+  // note：主会话给存活 Ticket 的 worker 递一条事实（仅上下文，不授予任何权限）。
   note(ticketId: string, text: string): Ticket { return this.repo.atomic(() => this.tickets.note(ticketId, text)) }
   /**
    * An Executor's hand-back of a message that reached its ticket but asks for more than it: see `Evals.handback`.
    * @returns whether it was queued for Eval: false while another ticket still decides it, and for one this ticket did not decide (see `Evals.handback`).
    * @throws UserError when the ticket or trigger is unknown, the trigger did not reach the ticket, or the ticket already handed it back.
    */
+  // handback：worker 退回一条超出 Ticket 范围的消息；是否重新排队见 Evals.handback。
   handback(ticketId: string, triggerId: string, reason: string): boolean {
     return this.repo.atomic(() => this.evals.handback(ticketId, triggerId, reason))
   }
@@ -236,35 +302,49 @@ export class Engine {
    * @throws UserError for an unknown or ended ticket, an ended assignment, a question that comes with a ready result or an
    * answer, or a question or answer that names a message that is not a person's or did not reach the ticket.
    */
+  // report：worker 报告——记录状态与总结；问题（attention）提出/保持/清除（null 或 ready），
+  // 被替换且未发出的提问从发件箱撤回；blocked/failed 扣留自动 Inputs 直到真人消息到来；
+  // dropped 直接结束；ready 在无跟随 Thread 时按 completed 结束，否则等 followsDone 成立按其结果结束。
   report(ticketId: string, report: WorkerReport): Ticket { return this.repo.atomic(() => this.assignments.report(ticketId, report)) }
   /**
    * Handles an assignment that was running when the host stopped: restarts it with a recovery note unless its latest report is
    * `waiting`, `ready`, `blocked`, or `failed` and no Input reached its worker after that report, in which case it keeps its
    * Session and state and gets the Inputs that wait for it.
    */
+  // assignmentInterrupted：宿主停止时仍在运行的 Assignment——
+  // 最新报告是 waiting/ready/blocked/failed 且其后无新 Input：保留 Session 与状态，只补投；
+  // 否则带恢复说明重启（与人工重试相同）。
   assignmentInterrupted(ticketId: string, assignmentId: string): void {
     this.repo.atomic(() => { this.assignments.interrupted(ticketId, assignmentId) })
   }
 
   // Settings
+  // —— Settings（设置服务）调用的入口 ——
 
   /**
    * The Policy changed: each open ticket in `effects` is told how the change bears on it, and Evals in progress start again
    * under the new version.
    */
+  // policyChanged：Policy 变更——受影响的存活 Ticket 各收到一条 policy-changed Input（告知影响），
+  // 进行中的 Eval 在新版本下重新开始。
   policyChanged(from: string, to: string, effects: ReadonlyMap<string, PolicyEffect> = new Map()): void {
     this.repo.atomic(() => { this.tickets.policyChanged(from, to, effects); this.evals.policyChanged(from, to) })
   }
 }
 
 /** What Sources ask and tell the Engine. */
+// EngineForSources：Source 侧可见的 Engine 子集（receive / bindThread / threadClosed）。
 export type EngineForSources = Pick<Engine, 'receive' | 'bindThread' | 'threadClosed'>
 /** What the main Session asks of the Engine. */
+// EngineForMainSession：主会话（Router）可见的子集。
 export type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateDelivered' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'>
 /** What people ask of the Engine, through the panel or the main Session. */
+// EngineForPeople：人（面板/主会话）可见的子集。
 export type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'reevaluate' | 'unsubscribe' | 'dismiss'>
 /** What Settings tells the Engine. */
+// EngineForSettings：设置服务可见的子集。
 export type EngineForSettings = Pick<Engine, 'policyChanged'>
 /** What the Executor tells the Engine, and what its workers ask of it. */
+// EngineForExecutor：Executor 与 worker 可见的子集。
 export type EngineForExecutor = Pick<Engine, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'deliveryFailed'
   | 'assignmentInterrupted' | 'report' | 'markUnrelated' | 'handback' | 'followForContext' | 'reply'>

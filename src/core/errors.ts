@@ -1,4 +1,7 @@
 /** User-facing error codes mapped to their category ('missing' or 'refused') and English message template. */
+// 面向用户的错误码表：每项映射到类别（'missing' 缺失 → HTTP 404，'refused' 拒绝 → HTTP 400）
+// 以及一条英文消息模板（{xxx} 为占位符，由 values 填充）。
+// web 面板按 code 用各语言文案显示；英文模板供日志与 agent 阅读。
 export const USER_ERRORS = {
   unknownTicket: ['missing', 'Unknown ticket'],
   unknownProblem: ['missing', 'Unavailable Eval not found'],
@@ -45,12 +48,17 @@ export const USER_ERRORS = {
   noLabels: ['refused', 'This Source has no names to refresh'],
   nothingToSync: ['refused', 'The {source} Source\'s part of the Policy has nothing to sync from, or the Source is off or waiting for setup'],
 } as const satisfies Record<string, readonly ['missing' | 'refused', string]>
+// satisfies：既让对象保持字面量类型（keyof 可用），又校验整体形状符合映射——
+// 新增错误码时若类别拼错会在这里报编译错误。
 export type UserErrorCode = keyof typeof USER_ERRORS
 
 /**
  * Structured error thrown by Engine parts and application services when a caller request is invalid or references missing state.
  * Tool handlers and HTTP routes inspect its code and missing flag to return appropriate status responses, while the web panel localizes the code.
  */
+// UserError：Engine 部件与应用服务在"请求无效或引用了不存在的状态"时抛出的结构化错误。
+// 工具处理器与 HTTP 路由读取它的 code 与 missing 标志决定响应（404 / 400）；
+// 面板按 code 本地化文案。构造时用 values 填充模板占位符生成英文消息。
 export class UserError extends Error {
   readonly missing: boolean
   constructor(readonly code: UserErrorCode, readonly values: Record<string, string> = {}) {

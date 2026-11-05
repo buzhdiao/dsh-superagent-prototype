@@ -1,4 +1,6 @@
 /** Feishu source kind definition, policy synchronization, and Cordis plugin entry. */
+// 飞书 Source：kind 定义、Policy 同步（从群成员刷新允许名单）、Cordis 插件入口。
+// 监听方式：事件消费（长连接）为主，历史补收与订阅 Thread 轮询兜底。
 import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import { FeishuBotSchema } from '../deployment.ts'
@@ -14,10 +16,13 @@ export { SOURCE, feishuRef, feishuThreadId, feishuTime, feishuTrigger, feishuTri
   from './feishu-trigger.ts'
 export type { FeishuEvent } from './feishu-trigger.ts'
 export { backfillChat, consumerRetry, pollThreads, refreshChatNames, threadRef } from './feishu-loops.ts'
+// MembersSchema：群成员列表响应（member_id + 名字）；truncations 非空说明名单被截断，不能直接用。
 const MembersSchema = z.looseObject({
   users: z.array(z.looseObject({ member_id: z.string(), name: z.string() })),
   has_more: z.boolean(), truncations: z.array(z.unknown()).optional(),
 })
+// FeishuConfigSchema：飞书实例配置——bot CLI、分页/链接超时（高级）、
+// 接收的群（chatId + 仅@/全部）、私聊开关、其他群策略。
 const FeishuConfigSchema = FeishuBotSchema.extend({
   readPageSize: z.number().int().min(1).max(50).default(20),
   linkTimeoutMs: z.number().int().min(1).max(90000).default(5000),
@@ -28,12 +33,15 @@ const FeishuConfigSchema = FeishuBotSchema.extend({
   otherChats: z.enum(['none', 'mentions']).default('none'),
 }).strict()
 export type FeishuConfig = z.infer<typeof FeishuConfigSchema>
+// feishuKind：飞书的 SourceKind 定义。
 export const feishuKind: SourceKind<FeishuConfig> = {
   kind: SOURCE,
+  // refreshLabels：重读群名（面板与准入表行显示用）。
   refreshLabels: (host, signal) => refreshChatNames(sourceContext(host, feishuKind), signal),
   title: { zh: '飞书', en: 'Feishu' },
   description: { zh: '接收下列群和私聊中发给机器人的消息，补收群历史并轮询订阅的线程。', en: 'Receives messages to the bot in these chats and direct messages, recovers chat history and polls subscribed Threads.' },
   schema: FeishuConfigSchema,
+  // fields：面板表单——bot 的 lark-cli、群列表（选择/刷新）、其他群、私聊、分页与链接超时。
   fields: [
     { key: 'cli', type: 'text', label: { zh: '机器人的 lark-cli', en: 'Bot lark-cli' },
       hint: { zh: '命令名或绝对路径，指向只允许机器人身份（strict mode bot）的 lark-cli 配置；执行器以 lark-cli 调用它。保存时读取应用和机器人，然后重启 dsh-superagent。', en: 'A command name or absolute path of a lark-cli configuration that allows only the bot identity (strict mode bot); the Executor calls it as lark-cli. Saving reads the app and the bot, then restarts dsh-superagent.' } },
@@ -50,7 +58,9 @@ export const feishuKind: SourceKind<FeishuConfig> = {
     { key: 'linkTimeoutMs', type: 'number', advanced: true, min: 1, max: 90000, label: { zh: '原消息链接的查询时限 / 毫秒', en: 'Original message link time limit / ms' },
       hint: { zh: '查询原消息链接最多等待的时间；超时后智能体改为直接读取原消息。', en: 'How long to wait for an original message\'s link; after that, agents read the message itself.' } },
   ],
+  // health：本 kind 拥有两个健康条目——feishu（主循环）与 history（历史补收）。
   health: ['feishu', 'history'],
+  // scope：监听规则——私聊按 directMessages；列出的群按其 listen；未列群按 otherChats（仅 @）。
   scope({ meta }, config) {
     if (meta.direct === true) return config.directMessages ? { listened: true, observed: false, row: 'direct' } : { listened: false, reason: 'direct_messages_not_allowed' }
     const chat = config.chats.find(item => item.chatId === meta.chatId)
@@ -58,15 +68,20 @@ export const feishuKind: SourceKind<FeishuConfig> = {
     return config.otherChats === 'mentions' ? { listened: true, observed: false, row: 'other' } : { listened: false, reason: 'chat_not_allowed' }
   },
   // A reply goes only to a chat the Source still receives.
+  // channel：回复只能发往本 Source 仍在接收的会话（allowed 用 scope 反查）。
   channel: {
     allowed: (address, config) =>
       feishuKind.scope!({ meta: { chatId: address.chatId ?? '', direct: address.direct === 'true' } }, config).listened,
     send: sendFeishu, link: feishuLink,
   },
+  // threadContext：评估用的有界 Thread 读取器（话题/根/父消息，带图片）。
   threadContext: feishuThreadContext,
+  // find：把消息 id（om_ 开头）映射为检索词（用于搜索定位 Trigger）。
   find: query => ({ threads: [], terms: [...new Set(query.match(/om_[A-Za-z0-9_-]+/g) ?? [])] }),
   // A message's Trigger is named after the message, so the one it answers is named after its parent.
+  // repliesTo：Trigger 以其消息 id 命名，因此它回复的那条的 Trigger id 可直接推导（免联网）。
   repliesTo: trigger => typeof trigger.meta.parentId === 'string' ? feishuTriggerId(trigger.meta.parentId) : undefined,
+  // policy：飞书的 Policy 部分——允许名单（open_id）、同步来源群、bot 名单。
   policy: {
     unnamed: { person: { zh: '飞书用户', en: 'Feishu user' }, bot: { zh: '飞书机器人', en: 'Feishu bot' } },
     schema: z.object({
@@ -86,7 +101,9 @@ export const feishuKind: SourceKind<FeishuConfig> = {
         columns: [{ key: 'id', type: 'text', label: { zh: 'App ID 或 open_id', en: 'App ID or open_id' }, pattern: '(cli|ou)_[a-zA-Z0-9]+' },
           { key: 'name', type: 'text', label: { zh: '名字', en: 'Name' }, optional: true }] },
     ],
+    // explicit：飞书上"点名"= 名单内的人 @ 机器人或私聊它——总是明确请求，无需配置。
     explicit: { zh: '名单内的人 @ 机器人或私聊机器人，总是明确的请求，不需要配置。', en: 'Someone on the list who mentions the bot or messages it directly always makes an explicit request; that needs no setting.' },
+    // rows：把配置渲染成准入表行视图（各群/其他群/私聊）。
     rows(stored) {
       const config = FeishuConfigSchema.parse(stored)
       const mentions = { zh: '仅 @', en: '@ only' }
@@ -99,22 +116,28 @@ export const feishuKind: SourceKind<FeishuConfig> = {
           cells: { listedUnaddressed: false, unlistedAddressed: config.directMessages, unlistedUnaddressed: false } },
       ]
     },
+    // sync：从同步群刷新允许名单（启动时与手动触发）。
     sync: {
       label: { zh: '立即同步', en: 'Sync now' },
+      // ready：配置了同步群才可同步。
       ready: part => !!part.syncChat,
       async run(host, part, signal) {
         const commands = sourceContext(host, feishuKind).commands.withSignal(signal)
         const chat = String(part.syncChat)
+        // lark-cli 拉全量成员（仅 user 类型）。
         const members = ['im', '+chat-members-list', '--chat-id', chat, '--member-types', 'user', '--page-all', '--page-limit', '0']
         const result = MembersSchema.parse(await commands.lark(members))
+        // 名单被截断时拒绝——半份名单当全量用会错删人。
         if (result.has_more || result.truncations?.length) throw new Error('Feishu returned an incomplete member list')
         // Preserve existing member order so policy version hashes stay stable; update names in place and append new members.
+        // 保留既有成员顺序（Policy 版本哈希才稳定）：老成员原地更新名字，新成员追加。
         const users = new Map(result.users.map(user => [user.member_id, user.name]))
         const known = new Set(part.allowed.map(entry => entry.id))
         return { ...part, allowed: [...part.allowed.filter(entry => users.has(entry.id)).map(entry => ({ ...entry, name: users.get(entry.id)! })), ...result.users.filter(user => !known.has(user.member_id)).map(user => ({ id: user.member_id, name: user.name }))] }
       },
     },
   },
+  // environment：worker 执行环境变量（机器人、发起工单的群）。
   environment: {
     variables: [
       { key: 'DSH_SUPERAGENT_FEISHU_BOT', description: { zh: '飞书机器人；lark-cli 以它行事', en: 'The Feishu bot; lark-cli acts as it' } },
@@ -122,13 +145,17 @@ export const feishuKind: SourceKind<FeishuConfig> = {
     ],
     values: ({ deployment, trigger }) => ({ DSH_SUPERAGENT_FEISHU_BOT: deployment.feishu ? deployment.feishu.name || deployment.feishu.botId : '', DSH_SUPERAGENT_FEISHU_CHAT: trigger?.source === SOURCE ? String(trigger.meta.chatId ?? '') : '' }),
   },
+  // facts：setup 完成后显示当前机器人。
   facts: (deployment): Record<string, Localized | string> => deployment?.feishu ? { cli: { zh: `当前机器人 ${deployment.feishu.name || deployment.feishu.botId}`, en: `Current bot ${deployment.feishu.name || deployment.feishu.botId}` } } : {},
 }
 /** Returns the Feishu Source's settings, falling back to schema defaults while the Feishu plugin is disabled. */
+// feishuSettings：读飞书配置——插件被禁用（实例不存在）时回退 schema 默认值。
+// Outbox 等通用模块借此应用飞书的字数上限，而不依赖插件是否运行。
 export const feishuSettings = (sources: SourceRegistry): FeishuConfig => sources.instance<FeishuConfig>(SOURCE)?.config ?? FeishuConfigSchema.parse({})
 
 export const name = 'dsh-superagent-feishu'
 export const inject = ['orchestrator']
+// apply：Cordis 插件入口——注册 kind + 启动飞书主循环（事件消费/历史/轮询）。
 export function apply(ctx: Context): void {
   ctx.effect(() => ctx.orchestrator.sources.register(feishuKind), 'feishu: source kind')
   ctx.effect(() => {
