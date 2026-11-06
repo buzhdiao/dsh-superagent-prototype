@@ -1,12 +1,18 @@
 /**
  * Bilingual UI dictionaries (`[zh, en]`) and glossary groupings, following the domain terms in `docs/001-domain.md`.
  */
+// 双语界面词典：每条为 `[中文, English]` 二元组；并按 docs/001-domain.md 的领域术语组织术语表分组。
 import { USER_ERRORS } from '../core/errors.ts'
+// 引入用户错误码表：英文文案直接复用宿主文本。
 import { SETUP_PROBLEMS } from '../setup.ts'
+// 引入部署检查问题表：英文复用宿主文本。
 import { HEALTH_TEXT } from '../sources/host.ts'
+// 引入健康码文案表：英文复用宿主文本。
 
+// 全部 UI 文案（TEXT）：键 → [zh, en] 元组，键名即翻译 key；按页面/功能分区。
 const TEXT = {
   // Shared
+  // —— 通用文案（标题、按钮、错误提示与决策/模式/来源/健康等标签）——
   title: ['Superagent', 'Superagent'],
   close: ['关闭', 'Close'],
   cancel: ['取消', 'Cancel'],
@@ -62,6 +68,7 @@ const TEXT = {
   imageMarker: ['[图片]', '[image]'],
   rules: ['接单规则', 'Accept rules'],
   remove: ['删除', 'Delete'],
+  // 配置历史来源标签。
   'historySource.panel': ['管理页', 'Management page'],
   'historySource.defaults': ['插件默认值', 'Plugin defaults'],
   'historySource.tool': ['主 Session 工具', 'Main Session tool'],
@@ -97,6 +104,7 @@ const TEXT = {
   sourceOff: ['已关闭', 'Off'],
   executorWaitingSetup: ['执行器等待部署检查', 'Executor waiting for the deployment check'],
   // Header, search, and tabs
+  // —— 顶栏、搜索与页签 ——
   panel: ['Superagent', 'Superagent'],
   openMaster: ['打开主 Session', 'Open main Session'],
   pagesLabel: ['dsh-superagent 页面', 'dsh-superagent pages'],
@@ -117,6 +125,7 @@ const TEXT = {
   'tab.eval': ['评估', 'Eval'],
   'tab.execution': ['执行', 'Execution'],
   // Overview
+  // —— 总览页 ——
   sourceError: ['{source} 来源异常', '{source} Source failing'],
   needsYouNone: ['没有待处理的工单。', 'No pending Tickets.'],
   pendingTickets: ['待处理工单', 'Pending Tickets'],
@@ -144,6 +153,7 @@ const TEXT = {
   'problemSetupFix.deployment': ['在部署设置里修正后保存，会重新检查；在 dsh-superagent 之外修复的（例如升级 git），点“重新检查”。', 'Fix it in the Deployment settings and save to check again; after a fix outside dsh-superagent, such as upgrading git, choose Check again.'],
   problemSetupFeishu: ['飞书机器人检查未通过，飞书来源暂停', 'Feishu bot check failed; the Feishu Source is paused'],
   // Source
+  // —— 来源页 ——
   labelsAdded: ['列表已更新，新增：{names}', 'List updated, added: {names}'],
   labelsCurrent: ['列表已是最新', 'List is up to date'],
   labelsFailed: ['读取失败，列表保持不变：{error}', 'Could not read the list; it stays as it was: {error}'],
@@ -169,6 +179,7 @@ const TEXT = {
   setupFixLink: ['去修正', 'Fix it'],
   'openSettingsOf.deployment': ['去部署页修改', 'Change it on Deployment'],
   // Trigger
+  // —— 触发页 ——
   loadEarlier: ['加载更早的触发', 'Load earlier Triggers'],
   subscribedTickets: ['订阅此线程的工单', 'Tickets subscribed to this Thread'],
   threadNotFound: ['找不到这个线程。', 'Thread not found.'],
@@ -212,6 +223,7 @@ const TEXT = {
   triggerIntro: ['触发按线程归组；线程决定它们扇出给哪些工单、由哪次评估处理。', 'Triggers grouped by Thread; the Thread decides which Tickets they fan out to and which Eval handles them.'],
   threadDecisions: ['这个线程的决定 · {count}', 'Decisions in this Thread · {count}'],
   // Eval
+  // —— 评估页 ——
   policyVersionHint: ['策略版本由接单规则、各来源上的策略和评估的接单模式决定；修改任何一项都会生成新版本，并通知进行中的工单。每个工单记下接单时的版本。', 'The rules, the Policy on each Source and the accept mode of Eval make up the Policy version; any change makes a new version and notifies open Tickets. Each Ticket records the version it was accepted under.'],
   syncNeedsSave: ['请先保存或放弃修改，再同步。', 'Save or discard your changes before syncing.'],
   acceptMode: ['接单模式', 'Accept mode'],
@@ -266,6 +278,7 @@ const TEXT = {
   evalRecordsPaused: ['处理已暂停：新的触发会被记录，但不会被评估。', 'Processing is paused: new Triggers are recorded but not evaluated.'],
   resumeWhere: ['在执行状态中恢复', 'Resume in the Execution status'],
   // Execution
+  // —— 执行页 ——
   'outcome.completed': ['已完成', 'Completed'],
   'outcome.merged': ['PR 已合并', 'Pull request merged'],
   'outcome.closed': ['PR 已关闭（未合并）', 'Pull request closed unmerged'],
@@ -394,6 +407,7 @@ const TEXT = {
   'ticketFilter.idle': ['等待新触发', 'Waiting for a Trigger'],
   'ticketFilter.ended': ['已结束', 'Ended'],
   // Settings, drafts, and configuration history
+  // —— 设置、草稿与配置历史 ——
   policyVersionUnrecorded: ['最近的保存记录里没有策略版本 {version}：它来自更早的保存、首次启动时的设置或更早的数据。', 'The recent saves do not include Policy version {version}: an older save, the settings at the first start, or older data made it.'],
   defaultModel: ['DSH 当前默认：{model}', 'DSH default: {model}'],
   defaultModelUnavailable: ['DSH 默认模型暂不可用', 'DSH default model unavailable'],
@@ -450,6 +464,7 @@ const TEXT = {
   'settingsGroup.deployment': ['部署', 'Deployment'],
   unsetValue: ['未设置', 'not set'],
   // Prompts
+  // —— 提示词 ——
   promptChanges: ['{count} 处修改', '{count} changes'],
   unsaved: ['未保存', 'Unsaved'],
   promptsDraftVersion: ['未保存 · 基于版本 {revision}', 'Unsaved · based on version {revision}'],
@@ -540,6 +555,7 @@ const TEXT = {
   'promptRole.orchestrator': ['主 Session', 'Main Session'],
   'promptRole.worker': ['执行器 Session', 'Executor Session'],
   // Deployment
+  // —— 部署 ——
   deploymentIntro: ['这台机器上的 dsh-superagent 设置，存放在 DSH 配置文件的 dsh-superagent 条目里；保存后立即生效，不会重启 dsh-superagent。', 'dsh-superagent\'s settings on this machine, kept in the dsh-superagent entry of the DSH configuration; a saved change applies at once, without restarting dsh-superagent.'],
   deploymentUnavailable: ['dsh-superagent 启动完成后才能修改这些值。', 'These values can be changed once dsh-superagent has started.'],
   deploymentDerived: ['仓库与账号', 'Repository and accounts'],
@@ -564,6 +580,7 @@ const TEXT = {
   setupChecking: ['正在重新检查，dsh-superagent 正在重启', 'Checking again; dsh-superagent is restarting'],
   setupCheckInterrupts: ['重新检查会重启 dsh-superagent：{count} 个进行中的派工会中断，并带恢复说明重新开始。', 'Checking again restarts dsh-superagent: {count} running Assignments stop and start again with a recovery note.'],
   // Reason codes; legacy English sentence reasons map to these in text.ts
+  // —— 原因码文案（旧版英文句子原因在 text.ts 中映射到这里）——
   'reason.not_human': ['自动消息', 'Automated message'],
   'reason.not_a_member': ['发送者不在这个来源的名单里', 'Sender is not on this Source\'s list'],
   'reason.no_mention': ['没有点名智能体，且这个来源不接收其余消息', 'Does not address the agent, and this Source does not receive the rest'],
@@ -613,11 +630,13 @@ const TEXT = {
   'reason.source_not_installed': ['来源插件未加载', 'Source plugin not loaded'],
   'reason.issue_unclaimed_less_than_wait': ['Issue 无人认领未满等待时长', 'Issue unclaimed for less than the wait'],
   // Glossary
+  // —— 术语表 ——
   glossary: ['术语表', 'Glossary'],
   glossaryIntro: ['界面只显示一种语言；文档、代码和工具使用英文术语。', 'The interface shows one language; documents, code and tools use the English terms.'],
   glossaryChinese: ['中文', '中文'],
   glossaryEnglish: ['English', 'English'],
   glossaryMeaning: ['含义', 'Meaning'],
+  // 术语名键（term.*）。
   'term.source': ['来源', 'Source'],
   'term.trigger': ['触发', 'Trigger'],
   'term.thread': ['线程', 'Thread'],
@@ -644,6 +663,7 @@ const TEXT = {
   'term.mainSession': ['主 Session', 'Main Session'],
   'term.executorSession': ['执行器 Session', 'Executor Session'],
   'term.policyVersion': ['策略版本', 'Policy version'],
+  // 术语含义键（meaning.*）。
   'meaning.agent': ['以 dsh-superagent 身份工作的虚拟同事：通过 GitHub 账号、飞书机器人等身份在来源上行动', 'The virtual colleague dsh-superagent runs: it acts on the Sources through its identities, such as a GitHub account or a Feishu bot'],
   'meaning.mainSession': ['评估触发、接单派工并回复的 DSH Session；提示词里称 orchestrator', 'The DSH Session that evaluates Triggers, accepts and dispatches work, and replies; prompts call it the orchestrator'],
   'meaning.executorSession': ['执行器为一个工单运行的 DSH Session；提示词里称 worker', 'The DSH Session the Executor runs for one Ticket; prompts call it the worker'],
@@ -680,6 +700,7 @@ const TEXT = {
   'term.environment': ['执行环境', 'Execution environment'],
   'meaning.environment': ['每个工单的执行器 Session 和准备命令运行的环境：执行器和各来源登记的变量，每个有键、值和说明', 'Where a Ticket\'s Executor Session and prepare command run: the variables the Executor and the Sources register, each with a key, a value and a description'],
   // User and agent error codes; English reuses the host's own text read by agents
+  // —— 用户与智能体错误码文案（英文复用宿主文本，供日志与主 Session 读取）——
   'userError.unknownTicket': ['找不到这个工单。', USER_ERRORS.unknownTicket[1]],
   'userError.unknownProblem': ['找不到这个未完成的评估。', USER_ERRORS.unknownProblem[1]],
   'userError.unknownTrigger': ['找不到这个触发。', USER_ERRORS.unknownTrigger[1]],
@@ -725,6 +746,7 @@ const TEXT = {
   'userError.noLabels': ['这个来源没有可以刷新的名称。', USER_ERRORS.noLabels[1]],
   'userError.nothingToSync': ['{source} 来源上的策略没有指定从哪里同步，或者这个来源已关闭或在等待部署检查。', USER_ERRORS.nothingToSync[1]],
   // Setup problems and health codes; English reuses the host's own text read by the log and main Session
+  // —— 部署检查问题与健康码文案（英文复用宿主文本，供日志与主 Session 读取）——
   'setup.repositoryUnset': ['GitHub 来源没有设置监听的仓库。', SETUP_PROBLEMS.repositoryUnset[1]],
   'setup.foreignFile': ['{file} 不是 dsh-superagent 写入的文件；移走它，或换一个状态目录。', SETUP_PROBLEMS.foreignFile[1]],
   'setup.gitTooOld': ['git 没有读取 dsh-superagent 为 github.com 写的凭据配置；需要 git 2.32 或更新版本。', SETUP_PROBLEMS.gitTooOld[1]],
@@ -746,12 +768,17 @@ const TEXT = {
   'healthCode.feishuCliUnset': ['来源已打开，还没有设置机器人的 lark-cli', HEALTH_TEXT.feishuCliUnset],
   'healthCode.feishuBotMissing': ['等待飞书机器人', HEALTH_TEXT.feishuBotMissing],
   'healthCode.pollFailures': ['连续 {count} 次轮询失败，最近一次：{error}', HEALTH_TEXT.pollFailures],
+// 编译期约束：每个值都必须是 [string, string] 二元组。
 } as const satisfies Record<string, readonly [string, string]>
+// 词典键类型（即翻译 key）。
 export type DshSuperagentKey = keyof typeof TEXT
+// language：从 TEXT 提取某一语言的键值表（0=中文，1=英文）。
 const language = (index: 0 | 1) => Object.fromEntries(Object.entries(TEXT).map(([key, pair]) => [key, pair[index]])) as Record<DshSuperagentKey, string>
+// 导出中文与英文两套词条。
 export const zh = language(0), en = language(1)
 
 /** Glossary terms grouped by stage flow after the acting roles; each key maps to `term.<key>` and `meaning.<key>`. */
+// 术语表（GLOSSARY）：按角色与阶段流程分组；每个键对应 `term.<key>` 与 `meaning.<key>` 两条文案。
 export const GLOSSARY = {
   roles: ['agent', 'mainSession', 'executorSession'],
   source: ['source', 'channel'],
@@ -759,12 +786,14 @@ export const GLOSSARY = {
   eval: ['policy', 'policyVersion', 'eval', 'gate', 'assessment', 'decision', 'mandate', 'scope', 'strength'],
   execution: ['executor', 'environment', 'ticket', 'assignment', 'input', 'report', 'attention'],
 } as const
+// 术语取值表（GLOSSARY_VALUES）：枚举类术语的可选值分组。
 export const GLOSSARY_VALUES = {
   decision: ['decision.accept', 'decision.reopen', 'decision.stop', 'decision.ignore', 'decision.unavailable'], strength: ['strength.explicit', 'strength.inferred'],
   ticket: ['stage.answer', 'stage.review', 'stage.blocked', 'stage.failed', 'stage.delivery', 'stage.queued', 'stage.working', 'stage.idle', 'ticket.ended'],
   assignment: ['assignment.pending', 'assignment.running', 'assignment.ended'], report: ['report.progress', 'report.waiting', 'report.ready', 'report.blocked', 'report.failed', 'report.dropped'],
 } as const
 
+// 模块扩充（module augmentation）：把本插件的词典键注册进 DSH 的本地化命名空间映射。
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap { dshSuperagent: DshSuperagentKey }
 }
